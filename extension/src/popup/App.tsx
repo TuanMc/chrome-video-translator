@@ -12,16 +12,21 @@ const LANGUAGE_OPTIONS: { value: SourceLanguage; label: string }[] = [
   { value: "zh", label: "中文" },
 ];
 
-// Measured directly by testing both backends on the same sentences — not a
-// generic claim. See server/README.md for the full comparison.
+// Measured directly by testing both local backends on the same sentences —
+// not a generic claim. See server/README.md for the full comparison. Soniox
+// is a cloud API (not fully local, paid) — labeled "(cloud)" for
+// transparency since every other option here is local; see
+// soniox-server/README.md.
 const PROVIDER_OPTIONS: { value: TranslationProvider; label: string }[] = [
   { value: "nllb", label: "NLLB" },
   { value: "libretranslate", label: "LibreTranslate" },
+  { value: "soniox", label: "Soniox (cloud)" },
 ];
 
 interface ProviderAvailability {
   nllb: boolean;
   libretranslate: boolean;
+  soniox: boolean;
 }
 
 const STATUS_LABEL: Record<CaptureStatus["state"], string> = {
@@ -37,18 +42,28 @@ export default function App() {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [status, setStatus] = useState<CaptureStatus>({ state: "idle" });
   const [busy, setBusy] = useState(false);
+  // Captured once, on mount — as close as possible to the icon-click that
+  // opened this popup and granted activeTab for that specific tab (see
+  // types/messages.ts's POPUP_START comment for why re-querying "the active
+  // tab" later, in the background script, is the actual bug this avoids).
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
   // Defaults to nllb-only-available until the health check resolves — matches
-  // the common case (no LibreTranslate container running) and avoids a flash
-  // of an enabled option that then gets disabled a moment later.
+  // the common case (no LibreTranslate container or Soniox server running)
+  // and avoids a flash of an enabled option that then gets disabled a moment
+  // later.
   const [providerAvailability, setProviderAvailability] = useState<ProviderAvailability>({
     nllb: true,
     libretranslate: false,
+    soniox: false,
   });
 
   useEffect(() => {
     loadSettings().then(setSettings);
     chrome.runtime.sendMessage({ type: "POPUP_GET_STATUS" } satisfies RuntimeMessage).then((s: CaptureStatus) => {
       if (s) setStatus(s);
+    });
+    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+      if (tab?.id !== undefined) setActiveTabId(tab.id);
     });
     // nllb-server and libre-server are independent processes on different
     // ports (see SERVER_CONFIG) — each is checked separately since either can
@@ -78,6 +93,19 @@ export default function App() {
         // surfaces a real error if the user tries to start a session anyway.
       });
 
+    // soniox-server reports readiness under the same field names as
+    // libre-server (see soniox-server/app/main.py's /health) — it's an
+    // opt-in cloud backend most users won't have running either.
+    fetch(SERVER_CONFIG.soniox.healthUrl, { signal: AbortSignal.timeout(3000) })
+      .then((res) => res.json())
+      .then((health: { sttModelLoaded?: boolean; translationReady?: boolean }) => {
+        setProviderAvailability((prev) => ({
+          ...prev,
+          soniox: Boolean(health.sttModelLoaded && health.translationReady),
+        }));
+      })
+      .catch(() => {});
+
     const listener = (message: RuntimeMessage) => {
       if (message.type === "STATUS_UPDATE") {
         setStatus(message.status);
@@ -105,9 +133,22 @@ export default function App() {
         const res = (await chrome.runtime.sendMessage({ type: "POPUP_STOP" } satisfies RuntimeMessage)) as AckResponse;
         if (!res.ok) setStatus({ state: "error", error: res.error });
       } else {
+        // Fallback for the rare case the mount-time query (above) hadn't
+        // resolved yet — still better than nothing, though it reintroduces
+        // a small window for the same race that capturing it early avoids.
+        let tabId = activeTabId;
+        if (tabId === null) {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = tab?.id ?? null;
+        }
+        if (tabId === null) {
+          setStatus({ state: "error", error: "Could not determine the active tab." });
+          return;
+        }
         const res = (await chrome.runtime.sendMessage({
           type: "POPUP_START",
           settings,
+          tabId,
         } satisfies RuntimeMessage)) as AckResponse;
         if (!res.ok) setStatus({ state: "error", error: res.error });
       }

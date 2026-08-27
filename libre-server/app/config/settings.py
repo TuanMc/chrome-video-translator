@@ -3,7 +3,9 @@ import os
 # Host/port aren't config here — they're passed directly as `uvicorn` CLI flags
 # (see README.md). This server runs on port 8001 (nllb-server takes 8000, so
 # both can run at once) — must match extension/src/constants/index.ts's
-# SERVER_CONFIG.libretranslate and manifest.json's host_permissions if ever changed.
+# SERVER_CONFIG.libretranslate if ever changed (manifest.json's
+# host_permissions is now <all_urls>, so it doesn't need updating for a port
+# change — see extension/README.md's "Known limitations" for why).
 
 # Fixed audio contract with the extension (see requirement.md section 13/16).
 AUDIO_SAMPLE_RATE = 16000

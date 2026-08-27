@@ -1,0 +1,8 @@
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.33
+
+# Outbound WebSocket client to Soniox's real-time API (app/providers/soniox_client.py).
+# No faster-whisper/numpy/httpx here — unlike nllb-server/libre-server, there's no
+# local STT model and no separate translate-over-HTTP call; Soniox does both over
+# this one connection.
+websockets>=13,<15

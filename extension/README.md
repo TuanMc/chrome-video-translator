@@ -66,19 +66,23 @@ This produces `dist/`, which is what you load into Chrome (not the dev server).
 ## Before testing: start a local server
 
 Start whichever server matches your intended **Translation Engine** popup
-setting — `../nllb-server/README.md` (port 8000) or `../libre-server/README.md`
-(port 8001). Both can run at once. The popup now checks `GET /health` on the
-selected server before starting and will show a clear error (not hang) if it
-isn't up or hasn't finished loading/reaching its models yet.
+setting — `../nllb-server/README.md` (port 8000), `../libre-server/README.md`
+(port 8001), or `../soniox-server/README.md` (port 8002, cloud-based/paid —
+see its README before using it). Any combination can run at once. The popup
+now checks `GET /health` on the selected server before starting and will show
+a clear error (not hang) if it isn't up or hasn't finished loading/reaching
+its models yet.
 
 ## Popup settings
 
 - **Source language**: English / 日本語 / 中文 — sent as `sourceLanguage` in
   the WebSocket `start` message.
-- **Translation engine**: NLLB or LibreTranslate — determines which local
-  server (port 8000 or 8001) this session connects to. LibreTranslate is
-  disabled in the popup unless `libre-server`'s `/health` reports it reachable
-  (most users won't have it running — it's an opt-in second server).
+- **Translation engine**: NLLB, LibreTranslate, or Soniox (cloud) — determines
+  which server (port 8000, 8001, or 8002) this session connects to.
+  LibreTranslate and Soniox are both disabled in the popup unless their
+  server's `/health` reports it reachable (most users won't have either
+  running — they're opt-in). Soniox is also the only non-local option here —
+  see `../soniox-server/README.md` before using it.
 - **Display**: Vietnamese-only or Bilingual (original + translated) — applied
   by the content script (hides/shows the original-language line).
 - **Text size**: 16-32px, applied to the translated line (original line is
@@ -96,7 +100,9 @@ settings, then start; no live-editing mid-session yet.
 1. Start nllb-server, confirm `curl http://127.0.0.1:8000/health` shows both
    `sttModelLoaded` and `translationModelLoaded` as `true`. (For libre-server:
    `curl http://127.0.0.1:8001/health`, looking for `sttModelLoaded` and
-   `translationReady`.)
+   `translationReady`. For soniox-server: `curl http://127.0.0.1:8002/health`,
+   looking for `apiKeyConfigured` — note this only confirms a key is set, not
+   that it's valid or Soniox is reachable.)
 2. Open the popup with the server **stopped** first — click **START
    TRANSLATION** — should show a clear "Local server is not running" error, not
    hang or silently fail. Then start the server and confirm the same click
@@ -146,6 +152,7 @@ settings, then start; no live-editing mid-session yet.
 | Unsupported/`chrome://` page | Clear error, shown immediately |
 | Local server not running / still loading models | Caught by the pre-start health check, clear error, doesn't attempt capture |
 | Tab audio capture fails / permission denied | Wrapped with a friendlier message than the raw Chrome error |
+| Active tab changes between opening the popup and clicking Start (e.g. a page opening its own new tab/window — common on ad-heavy sites) | Avoided rather than handled: the popup captures the tab id as soon as it opens (closest to the icon-click that granted `activeTab` for that specific tab) and passes it through explicitly, instead of the background script re-querying "the active tab" later and possibly getting a different, never-activated tab — see `POPUP_START`'s comment in `types/messages.ts` |
 | WebSocket disconnects mid-session (server crash, network drop) | Detected via the socket's close/error events, distinguished from an intentional Stop; auto-cleans up audio/offscreen resources and surfaces a clear `Error` status |
 | Offscreen audio setup hangs | 10s timeout on that round-trip, so the popup can't get stuck on `Connecting…` forever |
 | Service worker unresponsive when popup sends a command | Caught in the popup, shown as an error instead of a silent failure |
@@ -200,8 +207,24 @@ confirmation.
   positives would need real tuning against real content; not attempted.
 - DRM-protected streams and `chrome://`-style pages are expected to fail;
   that's by design.
-- `host_permissions` is scoped to exactly `http://127.0.0.1:8000/*` and
-  `http://127.0.0.1:8001/*` (needed so the service worker's health-check
-  `fetch()` isn't blocked by CORS) — if you change either server's port,
-  update this in `manifest.json` and `src/constants/index.ts`'s
-  `SERVER_CONFIG` too.
+- `host_permissions` is `<all_urls>` — broader than this project's usual
+  minimal-permissions default, and a deliberate tradeoff, not an oversight.
+  It's needed for two things: (1) the service worker's health-check
+  `fetch()` against the local servers (ports 8000/8001/8002) isn't blocked
+  by CORS, and (2) `chrome.scripting.executeScript`'s `allFrames: true`
+  injection (see below) can actually reach cross-origin iframes — e.g. an
+  embedded YouTube/Vimeo player on a third-party site — which Chrome
+  otherwise blocks regardless of `activeTab`. If you're uncomfortable with
+  this permission scope, you can narrow `host_permissions` back down to just
+  the three localhost entries; you'll lose the fullscreen-overlay fix for
+  cross-origin embedded players (same-origin embeds and non-iframe video
+  like YouTube's own watch page are unaffected either way).
+- **Fullscreen + embedded/iframe video**: the overlay is injected into every
+  frame of the tab (`allFrames: true`), and each frame works out on its own
+  whether it's the one that should currently show the overlay, based on the
+  Fullscreen API's per-document `fullscreenElement`/`fullscreenchange`
+  behavior — see the long comment in `content-script.ts` around
+  `isActiveForFullscreenChain` for the exact reasoning. One known gap: an
+  iframe added to the page *after* the content script was injected (e.g. a
+  lazily-loaded player) won't get the script re-injected into it, since
+  injection happens once, on Start — this hasn't been worked around.

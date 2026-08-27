@@ -2,7 +2,9 @@ import os
 
 # Host/port aren't config here — they're passed directly as `uvicorn` CLI flags
 # (see server/README.md) and must match extension/src/constants/index.ts's
-# LOCAL_SERVER_ORIGIN and manifest.json's host_permissions if ever changed.
+# LOCAL_SERVER_ORIGIN if ever changed (manifest.json's host_permissions is
+# now <all_urls>, so it doesn't need updating for a port change — see
+# extension/README.md's "Known limitations" for why).
 
 # Fixed audio contract with the extension (see requirement.md section 13/16).
 AUDIO_SAMPLE_RATE = 16000

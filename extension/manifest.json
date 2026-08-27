@@ -11,6 +11,6 @@
     "type": "module"
   },
   "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting"],
-  "host_permissions": ["http://127.0.0.1:8000/*", "http://127.0.0.1:8001/*"],
+  "host_permissions": ["<all_urls>"],
   "minimum_chrome_version": "116"
 }

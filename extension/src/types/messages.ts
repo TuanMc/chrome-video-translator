@@ -13,7 +13,17 @@ export interface CaptureStatus {
 }
 
 export type RuntimeMessage =
-  | { type: "POPUP_START"; settings: UserSettings }
+  // tabId is captured by the popup itself, as close as possible to the user's
+  // icon-click that granted activeTab (see App.tsx) — NOT re-derived later in
+  // the background script via a fresh "active tab" query. activeTab is tied
+  // to the specific tab that was active at the moment of that click; if the
+  // background script re-queries "the active tab" after an async gap (a
+  // message round-trip plus whatever else runs before tabCapture), a page
+  // that opens its own new tab/window in that window (common on ad-heavy
+  // sites) can make a *different* tab "active" by then — one activeTab was
+  // never granted for — producing tabCapture's cryptic "Extension has not
+  // been invoked for the current page" error on an otherwise-supported page.
+  | { type: "POPUP_START"; settings: UserSettings; tabId: number }
   | { type: "POPUP_STOP" }
   | { type: "POPUP_GET_STATUS" }
   | {

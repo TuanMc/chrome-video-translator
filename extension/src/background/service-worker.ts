@@ -45,10 +45,18 @@ async function closeOffscreenDocument(): Promise<void> {
   }
 }
 
-async function getActiveTab(): Promise<chrome.tabs.Tab> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || tab.id === undefined) {
-    throw new Error("No active tab found.");
+// Takes the tabId the popup already captured (see types/messages.ts's
+// POPUP_START comment) rather than re-querying "the active tab" here — by
+// the time this runs, a different tab could have become active in this
+// window (e.g. a page opening its own new tab/window), and that tab would
+// never have been granted activeTab, causing a confusing tabCapture failure
+// on an otherwise perfectly capturable page.
+async function getTab(tabId: number): Promise<chrome.tabs.Tab> {
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    throw new Error("The tab this session was started from is no longer available.");
   }
   if (!tab.url || UNSUPPORTED_URL_PREFIXES.some((prefix) => tab.url!.startsWith(prefix))) {
     throw new Error("This page is not supported (browser/extension pages cannot be captured).");
@@ -59,12 +67,13 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
 const SERVER_FOLDER: Record<TranslationProvider, string> = {
   nllb: "nllb-server",
   libretranslate: "libre-server",
+  soniox: "soniox-server",
 };
 
 // requirement.md section 24: check the local server before attempting to start,
 // rather than discovering it's down partway through tabCapture/offscreen setup.
-// nllb-server and libre-server are independent processes (see SERVER_CONFIG) —
-// only the one for the selected engine needs to be up.
+// nllb-server, libre-server, and soniox-server are independent processes (see
+// SERVER_CONFIG) — only the one for the selected engine needs to be up.
 async function checkLocalServer(translationProvider: TranslationProvider): Promise<void> {
   const { healthUrl, origin } = SERVER_CONFIG[translationProvider];
   let response: Response;
@@ -82,7 +91,7 @@ async function checkLocalServer(translationProvider: TranslationProvider): Promi
   const health = (await response.json()) as {
     sttModelLoaded?: boolean;
     translationModelLoaded?: boolean; // nllb-server
-    translationReady?: boolean; // libre-server
+    translationReady?: boolean; // libre-server, soniox-server
   };
   const translationOk = translationProvider === "nllb" ? health.translationModelLoaded : health.translationReady;
   if (!health.sttModelLoaded || !translationOk) {
@@ -90,11 +99,11 @@ async function checkLocalServer(translationProvider: TranslationProvider): Promi
   }
 }
 
-async function startCapture(settings: UserSettings): Promise<void> {
+async function startCapture(settings: UserSettings, tabId: number): Promise<void> {
   await setStatus({ state: "connecting" });
 
   await checkLocalServer(settings.translationProvider);
-  const tab = await getActiveTab();
+  const tab = await getTab(tabId);
 
   await ensureOffscreenDocument();
   // Everything below can fail in ways that would otherwise leave the offscreen
@@ -102,7 +111,14 @@ async function startCapture(settings: UserSettings): Promise<void> {
   // start attempt — one boundary that closes it on any failure, rather than a
   // `closeOffscreenDocument()` scattered into every individual catch.
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id! }, files: [CONTENT_SCRIPT_PATH] });
+    // allFrames: true — needed so the overlay still renders correctly when
+    // the actual video is inside an iframe (e.g. an embedded YouTube/Vimeo
+    // player) and that iframe's content goes fullscreen: only the fullscreen
+    // element's own subtree stays in the browser's "top layer" while
+    // fullscreen, so a top-frame-only overlay becomes invisible in that case
+    // (see content-script.ts's fullscreen-chain coordination). Requires
+    // host_permissions to cover the iframe's origin too — see manifest.json.
+    await chrome.scripting.executeScript({ target: { tabId: tab.id!, allFrames: true }, files: [CONTENT_SCRIPT_PATH] });
     await chrome.tabs
       .sendMessage(tab.id!, {
         type: "CONTENT_INIT",
@@ -171,7 +187,7 @@ function isActive(state: CaptureStatus["state"]): boolean {
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   if (message.type === "POPUP_START") {
-    startCapture(message.settings)
+    startCapture(message.settings, message.tabId)
       .then(() => sendResponse({ ok: true } satisfies AckResponse))
       .catch((err: Error) => {
         setStatus({ state: "error", error: err.message });

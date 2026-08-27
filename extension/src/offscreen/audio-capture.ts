@@ -25,6 +25,17 @@ let chunksSent = 0;
 // only the latter should be reported up as an error (requirement.md section 27:
 // "WebSocket disconnected").
 let intentionalStop = false;
+// Most recent `{type: "error"}` protocol message from the server (see
+// app/models/protocol.py's ServerError on any of the three servers). Per-
+// segment STT/translation failures are documented as non-fatal — "the next
+// scheduled pass retries... session continues" — so receiving one must NOT
+// by itself end the session. But a server can also send an error right
+// before closing the connection for a genuinely fatal reason (e.g.
+// soniox-server closing on a bad/invalid API key) — in that case the
+// WebSocket's own onclose handler below already ends the session; this just
+// lets it use the server's specific, actionable message instead of the
+// generic "Connection to the local server was lost." fallback.
+let lastServerErrorMessage: string | null = null;
 
 function setStatusText(text: string): void {
   const el = document.getElementById("status");
@@ -41,6 +52,7 @@ async function startCapture(
     throw new Error("Capture already in progress.");
   }
   intentionalStop = false;
+  lastServerErrorMessage = null;
 
   // Everything here can fail partway through (worklet module missing, WS
   // connect failing, etc.) after stream/audioContext are already live. Without
@@ -91,6 +103,14 @@ async function startCapture(
           chrome.runtime
             .sendMessage({ type: "OFFSCREEN_STATUS", status: message.status } satisfies RuntimeMessage)
             .catch(() => {});
+        } else if (message.type === "error") {
+          // Non-fatal by itself (see lastServerErrorMessage's comment above) —
+          // just remembered here and surfaced in the debug status line. If
+          // it turns out to have been fatal, the server closes the
+          // connection right after, and onClose below uses this message.
+          console.warn("[offscreen] server error:", message.code, message.message);
+          lastServerErrorMessage = message.message;
+          setStatusText(`server reported an error: ${message.message}`);
         }
       },
       onError: () => {
@@ -100,7 +120,7 @@ async function startCapture(
       onClose: () => {
         console.log("[offscreen] websocket closed");
         if (!intentionalStop) {
-          handleUnexpectedDisconnect("Connection to the local server was lost.").catch(() => {});
+          handleUnexpectedDisconnect(lastServerErrorMessage ?? "Connection to the local server was lost.").catch(() => {});
         }
       },
     });

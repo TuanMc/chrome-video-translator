@@ -78,13 +78,48 @@ if (!document.getElementById(HOST_ID)) {
   // became the fullscreen element (or back to <body> on exit) so the overlay
   // stays visible either way. `position: fixed` still resolves against the
   // viewport inside the top layer, so no positioning changes are needed.
+  //
+  // This script runs in every frame of the tab (see service-worker.ts's
+  // allFrames: true), because the video is often inside an iframe (an
+  // embedded YouTube/Vimeo player, etc.) rather than the top-level page —
+  // and when *that* iframe's content goes fullscreen, only its own subtree
+  // stays in the top layer, so a top-frame-only overlay would still go
+  // invisible even with the re-parenting above. Per the Fullscreen API spec,
+  // fullscreening an element inside a nested frame also updates
+  // `document.fullscreenElement` (to the relevant `<iframe>` node) and fires
+  // `fullscreenchange` in every ancestor document up the chain — so each
+  // frame can independently work out its own role with no cross-frame
+  // messaging needed:
+  //   - The frame whose own `fullscreenElement` is a real content element
+  //     (not an `<iframe>`) is the actual fullscreened leaf — it shows the
+  //     overlay (re-parented into that element, as above).
+  //   - A frame whose `fullscreenElement` is an `<iframe>` only *contains*
+  //     the fullscreened frame somewhere inside it — appending into an
+  //     `<iframe>` tag renders nothing anyway, so it hides its own overlay
+  //     and defers to that descendant frame's own instance of this script.
+  //   - With no fullscreen active anywhere in this frame's chain, only the
+  //     top-level frame shows the default overlay — otherwise every iframe
+  //     on the page (most of which have nothing to do with the video) would
+  //     independently render its own copy.
+  function isActiveForFullscreenChain(): boolean {
+    const fsEl = document.fullscreenElement;
+    if (fsEl) return fsEl.tagName !== "IFRAME";
+    return window === window.top;
+  }
+
   function keepOverlayInFullscreenSubtree(): void {
     const target = document.fullscreenElement ?? document.body ?? document.documentElement;
     if (host.parentElement !== target) {
       target.appendChild(host);
     }
+    host.style.display = isActiveForFullscreenChain() ? "" : "none";
   }
   document.addEventListener("fullscreenchange", keepOverlayInFullscreenSubtree);
+  // Run once up front too — matters for non-top frames, which must start
+  // hidden immediately rather than only once the first fullscreenchange
+  // fires (otherwise an iframe with real page real estate would render a
+  // second, duplicate overlay the moment a subtitle first arrives).
+  keepOverlayInFullscreenSubtree();
 
   // Sensible defaults (mirrors types/settings.ts DEFAULT_USER_SETTINGS) in case
   // CONTENT_INIT is somehow delayed past the first subtitle — shouldn't happen in
