@@ -34,7 +34,14 @@ WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "")
 
 # Sliding-window streaming tuning (see requirement.md section 14).
-WHISPER_TRIGGER_SECONDS = float(os.environ.get("WHISPER_TRIGGER_SECONDS", "1.0"))
+# Governs only the *incremental* (windowed, not-expected-to-finalize) pass
+# cadence now — was previously also the only thing gating finalize checks,
+# but that's now driven earlier/independently by the cheap VAD probe (see
+# WHISPER_VAD_PROBE_WINDOW_SECONDS below and faster_whisper.py's
+# _check_vad_probe). Lowered from 1.0 to 0.7 (segment-improvement.md's
+# suggested 600-800ms) now that finalize-latency no longer rides on this same
+# cadence, so tightening it further is lower-risk than it used to be.
+WHISPER_TRIGGER_SECONDS = float(os.environ.get("WHISPER_TRIGGER_SECONDS", "0.7"))
 # Was 0.7. Lowered for the "subtitle within 1s of speech ending" target — this
 # wait is pure dead time added before a finalize-eligible pass even runs, so
 # it's the cheapest thing to cut. Real risk: a brief natural pause *within* a
@@ -42,6 +49,27 @@ WHISPER_TRIGGER_SECONDS = float(os.environ.get("WHISPER_TRIGGER_SECONDS", "1.0")
 # sentence's end, splitting translation context earlier than really wanted —
 # same class of trade-off already accepted for chunking, just tuned further.
 WHISPER_SILENCE_FINALIZE_SECONDS = float(os.environ.get("WHISPER_SILENCE_FINALIZE_SECONDS", "0.4"))
+# Bound for passes not expected to finalize (segment-improvement.md's
+# "bounded sliding window" ask) — caps re-transcription cost that used to
+# grow toward the 5-8s finalize ceiling on every ~0.7-1s tick. Passes that
+# *are* expected to finalize (force_final, the VAD-probe-triggered early
+# check, final_flush) still see the full buffer — this only bounds the
+# cheap, frequent, not-yet-finalizing checks in between. 4.0s comfortably
+# contains WHISPER_SILENCE_FINALIZE_SECONDS (trailing-silence detection) and
+# slides forward every ~0.7s, so a multi-segment "settled" clause boundary
+# is always visible well before it could age out of the window.
+WHISPER_INCREMENTAL_WINDOW_SECONDS = float(os.environ.get("WHISPER_INCREMENTAL_WINDOW_SECONDS", "4.0"))
+# How much trailing buffer the cheap standalone VAD probe inspects each time
+# (faster_whisper.vad.get_speech_timestamps — just the small Silero ONNX
+# model, not a Whisper decode). Needs to comfortably exceed
+# WHISPER_SILENCE_FINALIZE_SECONDS with margin for the probe to reliably see
+# a full pause; kept small since this runs on ~every incoming audio chunk
+# (~200ms) and must stay cheap. Measured directly on this CPU with real
+# (gTTS-generated) speech, not synthetic noise: 3.5ms avg per probe call on
+# a 2s tail vs. 534ms avg per full transcribe() pass on a ~7s real-speech
+# clip — a 152x difference, confirming this is safe to run far more
+# often than a full pass.
+WHISPER_VAD_PROBE_WINDOW_SECONDS = float(os.environ.get("WHISPER_VAD_PROBE_WINDOW_SECONDS", "2.0"))
 # Was 15.0, then lowered to 4.0 to prioritize speed. Verified Whisper does NOT
 # naturally split a continuous, pause-free sentence into multiple segments at
 # any intermediate buffer size — it reports one growing segment the whole way.

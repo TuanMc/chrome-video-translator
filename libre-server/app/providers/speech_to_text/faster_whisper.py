@@ -9,6 +9,29 @@ buffer. If speech runs on for too long without a pause, the buffer is
 force-finalized instead of growing unbounded (bounds both re-transcription
 cost and worst-case latency).
 
+Two additions on top of that base scheme (segment-improvement.md, "frame-level
+VAD + bounded window" pass):
+
+1. A cheap standalone VAD probe (`faster_whisper.vad.get_speech_timestamps`,
+   just the small Silero ONNX model — not the Whisper encoder/decoder) runs on
+   every incoming audio chunk, decoupled from the expensive transcribe cadence
+   below. When it detects trailing silence, it triggers an early full-buffer
+   check immediately instead of waiting for the next scheduled tick — this is
+   the main latency win, since finalize-detection used to be bottlenecked on
+   the same cadence as everything else. Guarded to fire at most once per
+   detected-silence episode (`_silence_check_fired`) so a false-positive probe
+   reading can't retry every ~200ms — the same class of runaway-retry bug
+   already fixed once below for `force_final`.
+2. Passes that aren't expected to finalize (no VAD-detected silence, buffer
+   still well under the max) are windowed to the last
+   WHISPER_INCREMENTAL_WINDOW_SECONDS of the buffer instead of the whole
+   growing buffer — caps the worst-case re-transcription cost that used to
+   grow toward the 5-8s finalize ceiling. Passes expected to finalize
+   (`force_final`, the VAD-probe-triggered early check, and `final_flush`)
+   still see the full buffer, unwindowed, preserving the existing word-safety-
+   margin/hard-ceiling logic exactly and keeping single-pass coherence for
+   whatever text actually gets shown as final.
+
 This is a POC implementation, not the section-33 benchmarking result — window/
 trigger constants live in app.config.settings and are meant to be tuned once
 real latency numbers are in.
@@ -22,16 +45,18 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
+from faster_whisper.vad import VadOptions, get_speech_timestamps
 
 from app.config.settings import (
     AUDIO_SAMPLE_RATE,
     WHISPER_COMPUTE_TYPE,
     WHISPER_DEVICE,
     WHISPER_HARD_MAX_BUFFER_SECONDS,
+    WHISPER_INCREMENTAL_WINDOW_SECONDS,
     WHISPER_INITIAL_PROMPT,
     WHISPER_MAX_BUFFER_SECONDS,
     WHISPER_MODEL_SIZE,
@@ -39,6 +64,7 @@ from app.config.settings import (
     WHISPER_NO_SPEECH_PROB_THRESHOLD,
     WHISPER_SILENCE_FINALIZE_SECONDS,
     WHISPER_TRIGGER_SECONDS,
+    WHISPER_VAD_PROBE_WINDOW_SECONDS,
     WHISPER_WORD_SAFETY_MARGIN_SECONDS,
 )
 from app.providers.speech_to_text.base import ErrorCallback, SpeechToTextProvider, TranscriptCallback, TranscriptResult
@@ -48,6 +74,17 @@ logger = logging.getLogger("faster_whisper_provider")
 BYTES_PER_SAMPLE = 2
 TRIGGER_BYTES = int(WHISPER_TRIGGER_SECONDS * AUDIO_SAMPLE_RATE) * BYTES_PER_SAMPLE
 MAX_BUFFER_BYTES = int(WHISPER_MAX_BUFFER_SECONDS * AUDIO_SAMPLE_RATE) * BYTES_PER_SAMPLE
+INCREMENTAL_WINDOW_BYTES = int(WHISPER_INCREMENTAL_WINDOW_SECONDS * AUDIO_SAMPLE_RATE) * BYTES_PER_SAMPLE
+VAD_PROBE_WINDOW_BYTES = int(WHISPER_VAD_PROBE_WINDOW_SECONDS * AUDIO_SAMPLE_RATE) * BYTES_PER_SAMPLE
+
+# Options for the cheap standalone probe — reuses WHISPER_SILENCE_FINALIZE_SECONDS
+# as the min-silence-duration so there's one source of truth for "how much
+# trailing silence means a pause," shared with _transcribe_sync's own
+# (Whisper-internal-VAD-based) silence_final check below. The probe's job is
+# only to decide *when to bother checking early*, not to make the actual
+# finalize decision — that's still made by _transcribe_sync against the real
+# model output, unchanged.
+_PROBE_VAD_OPTIONS = VadOptions(min_silence_duration_ms=int(WHISPER_SILENCE_FINALIZE_SECONDS * 1000))
 
 # Found via a reproduced hallucination on near-silent trailing audio: Whisper
 # transcribed a 1.1s tail as ". ." (no actual words), and NLLB then hallucinated
@@ -89,9 +126,14 @@ def pcm16_bytes_to_float32(raw: bytes) -> np.ndarray:
 
 
 class FasterWhisperProvider(SpeechToTextProvider):
-    def __init__(self, model: WhisperModel, executor: ThreadPoolExecutor):
+    def __init__(self, model: WhisperModel, executor: ThreadPoolExecutor, vad_executor: ThreadPoolExecutor):
         self._model = model
         self._executor = executor
+        # Separate, lightweight executor for the cheap VAD-only probe — must
+        # not share a thread with `executor`, or a probe would just queue
+        # behind an in-flight (expensive) transcribe pass and lose the point
+        # of being cheap and frequent.
+        self._vad_executor = vad_executor
         self._language: Optional[str] = None
         self._buffer = bytearray()
         self._bytes_since_last_run = 0
@@ -100,6 +142,13 @@ class FasterWhisperProvider(SpeechToTextProvider):
         self._callback: Optional[TranscriptCallback] = None
         self._error_callback: Optional[ErrorCallback] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._vad_probe_in_flight = False
+        # True once an early VAD-triggered check has been fired for the
+        # *current* stretch of detected trailing silence — reset back to
+        # False as soon as the probe sees speech again (a new episode) or a
+        # pass actually finalizes. Without this, a probe false-positive would
+        # retry every ~200ms instead of falling back to the normal cadence.
+        self._silence_check_fired = False
 
     def on_transcript(self, callback: TranscriptCallback) -> None:
         self._callback = callback
@@ -113,10 +162,23 @@ class FasterWhisperProvider(SpeechToTextProvider):
         self._bytes_since_last_run = 0
         self._segment_id = uuid.uuid4().hex[:8]
         self._loop = asyncio.get_running_loop()
+        self._vad_probe_in_flight = False
+        self._silence_check_fired = False
 
     def send_audio(self, chunk: bytes) -> None:
         self._buffer.extend(chunk)
         self._bytes_since_last_run += len(chunk)
+
+        if not self._loop:
+            return
+
+        # Cheap, frequent check (runs on ~every incoming chunk, ~200ms) —
+        # decoupled from the expensive cadence below, so a natural pause can
+        # trigger a finalize check immediately instead of waiting up to
+        # WHISPER_TRIGGER_SECONDS for the next scheduled tick.
+        if not self._vad_probe_in_flight and not self._lock.locked():
+            self._vad_probe_in_flight = True
+            self._loop.create_task(self._check_vad_probe())
 
         # Bug found via user report of translation stalling: force_final can now
         # come back with is_final=False (no safe word boundary yet — see
@@ -125,15 +187,56 @@ class FasterWhisperProvider(SpeechToTextProvider):
         # which meant every subsequent chunk (every ~200ms, not the normal ~1s
         # cadence) would immediately retry — fine when force_final always
         # cleared the buffer in one shot (the old behavior), but a runaway
-        # re-transcription loop now that it doesn't always. Triggering is now
-        # driven only by the normal cadence; force_final is still computed
-        # fresh each time from the current buffer size.
-        if self._loop and not self._lock.locked() and self._bytes_since_last_run >= TRIGGER_BYTES:
+        # re-transcription loop now that it doesn't always. Triggering is still
+        # driven only by this normal cadence; force_final is still computed
+        # fresh each time from the current buffer size. Passes that aren't
+        # over_max are windowed (see _run_pass) instead of seeing the whole
+        # growing buffer.
+        if not self._lock.locked() and self._bytes_since_last_run >= TRIGGER_BYTES:
             self._bytes_since_last_run = 0
             over_max = len(self._buffer) >= MAX_BUFFER_BYTES
-            self._loop.create_task(self._run_pass(force_final=over_max))
+            self._loop.create_task(self._run_pass(force_final=over_max, windowed=not over_max))
 
-    async def _run_pass(self, force_final: bool, final_flush: bool = False) -> None:
+    async def _check_vad_probe(self) -> None:
+        try:
+            tail = bytes(self._buffer[-VAD_PROBE_WINDOW_BYTES:])
+            if not tail or self._lock.locked():
+                return
+            audio = pcm16_bytes_to_float32(tail)
+            speeches = await self._loop.run_in_executor(self._vad_executor, self._vad_probe_sync, audio)
+
+            if not speeches:
+                # Nothing detected in the probe window at all — not a "speech
+                # just ended" episode, just ongoing silence/nothing yet.
+                self._silence_check_fired = False
+                return
+
+            audio_duration = len(audio) / AUDIO_SAMPLE_RATE
+            trailing_silence = audio_duration - (speeches[-1]["end"] / AUDIO_SAMPLE_RATE)
+
+            if trailing_silence < WHISPER_SILENCE_FINALIZE_SECONDS:
+                # Still speaking (or not enough of a pause yet) — re-arm for
+                # the next time trailing silence actually appears.
+                self._silence_check_fired = False
+                return
+
+            if self._silence_check_fired or self._lock.locked():
+                return
+
+            self._silence_check_fired = True
+            self._bytes_since_last_run = 0
+            # force_final=False deliberately — the probe only decides *when*
+            # to check early; the actual finalize decision is still made by
+            # _transcribe_sync against the real (more accurate) Whisper VAD
+            # output, unchanged from before this feature existed.
+            self._loop.create_task(self._run_pass(force_final=False, windowed=False))
+        finally:
+            self._vad_probe_in_flight = False
+
+    def _vad_probe_sync(self, audio: np.ndarray) -> List[dict]:
+        return get_speech_timestamps(audio, _PROBE_VAD_OPTIONS)
+
+    async def _run_pass(self, force_final: bool, windowed: bool, final_flush: bool = False) -> None:
         # A lock (not a plain busy flag) so stop() can wait for an in-flight pass to
         # finish instead of silently skipping the final flush if one is running.
         async with self._lock:
@@ -141,9 +244,25 @@ class FasterWhisperProvider(SpeechToTextProvider):
                 return
 
             started_at = time.monotonic()
-            audio = pcm16_bytes_to_float32(bytes(self._buffer))
+            # Passes not expected to finalize get windowed to the last
+            # WHISPER_INCREMENTAL_WINDOW_SECONDS instead of the whole growing
+            # buffer. Any sample offset _transcribe_sync returns is relative
+            # to whatever audio it was given — window_offset_samples corrects
+            # that back to a full-buffer-relative offset before trimming, so
+            # a windowed pass that unexpectedly *does* finalize (the existing
+            # multi-segment "settled" chunking can still do this) still trims
+            # self._buffer at the right position instead of corrupting it.
+            if windowed and len(self._buffer) > INCREMENTAL_WINDOW_BYTES:
+                window_offset_bytes = len(self._buffer) - INCREMENTAL_WINDOW_BYTES
+                audio_bytes = bytes(self._buffer[window_offset_bytes:])
+            else:
+                window_offset_bytes = 0
+                audio_bytes = bytes(self._buffer)
+            window_offset_samples = window_offset_bytes // BYTES_PER_SAMPLE
+
+            audio = pcm16_bytes_to_float32(audio_bytes)
             try:
-                text, is_final, finalize_at_samples = await self._loop.run_in_executor(
+                text, is_final, finalize_at_samples_in_window = await self._loop.run_in_executor(
                     self._executor, self._transcribe_sync, audio, force_final, final_flush
                 )
             except Exception as exc:
@@ -152,12 +271,32 @@ class FasterWhisperProvider(SpeechToTextProvider):
                     await self._error_callback(f"Speech recognition failed for one segment: {exc}")
                 return
 
+            if window_offset_samples > 0 and is_final:
+                # Found via direct testing: a windowed pass's own leading edge
+                # can land mid-word (e.g. "itself" -> "self depends..."), the
+                # same class of bug WHISPER_WORD_SAFETY_MARGIN_SECONDS already
+                # guards against at the *trailing* edge — but nothing protects
+                # the *leading* edge of a bounded window, and none of
+                # _transcribe_sync's finalize paths (silence_final, the
+                # multi-segment "settled" chunking) were written expecting to
+                # see anything but a full-buffer-relative start. Rather than
+                # add leading-edge word-safety logic too, simplest and safest:
+                # a pass that actually cut off the front of the buffer (i.e.
+                # genuinely windowed, not just "buffer happened to be shorter
+                # than the window") never finalizes — only full-buffer passes
+                # (force_final / the VAD-probe-triggered early check /
+                # final_flush) commit a final result, exactly as before this
+                # feature existed. Downgraded to a preview-only partial; the
+                # next full-buffer pass will produce the correct complete text.
+                is_final = False
+
             latency_ms = (time.monotonic() - started_at) * 1000
             logger.info(
-                "[%s] stt_latency=%.0fms buffer=%.2fs final=%s text=%r",
+                "[%s] stt_latency=%.0fms buffer=%.2fs windowed=%s final=%s text=%r",
                 self._segment_id,
                 latency_ms,
                 len(audio) / AUDIO_SAMPLE_RATE,
+                windowed and window_offset_samples > 0,
                 is_final,
                 text[:80],
             )
@@ -181,9 +320,11 @@ class FasterWhisperProvider(SpeechToTextProvider):
                 )
 
             if is_final:
+                finalize_at_samples = finalize_at_samples_in_window + window_offset_samples
                 finalize_at_bytes = finalize_at_samples * BYTES_PER_SAMPLE
                 del self._buffer[:finalize_at_bytes]
                 self._segment_id = uuid.uuid4().hex[:8]
+                self._silence_check_fired = False
 
     def _transcribe_sync(self, audio: np.ndarray, force_final: bool, final_flush: bool = False) -> tuple[str, bool, int]:
         segments_iter, _info = self._model.transcribe(
@@ -297,5 +438,5 @@ class FasterWhisperProvider(SpeechToTextProvider):
     async def stop(self) -> None:
         if self._loop:
             # Waits for any in-flight pass (via the lock) before doing the final flush.
-            await self._run_pass(force_final=True, final_flush=True)
+            await self._run_pass(force_final=True, windowed=False, final_flush=True)
         self._buffer.clear()

@@ -26,6 +26,11 @@ async def lifespan(app: FastAPI):
     # about concurrent CTranslate2 calls, and fine for the assumed single-user local
     # usage; revisit if concurrent sessions become a real requirement.
     app.state.whisper_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="whisper")
+    # Separate from whisper_executor so the cheap VAD-only probe (see
+    # faster_whisper.py's _check_vad_probe) never queues behind an in-flight
+    # (expensive) transcribe pass — the whole point of it being cheap and
+    # frequent is lost if it has to wait for a slow decode to finish first.
+    app.state.vad_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vad")
     logger.info("Whisper ready.")
 
     # No in-process model to load here — translation goes over HTTP to a
@@ -38,6 +43,7 @@ async def lifespan(app: FastAPI):
     yield
 
     app.state.whisper_executor.shutdown(wait=False)
+    app.state.vad_executor.shutdown(wait=False)
     await app.state.translation_provider.aclose()
 
 

@@ -155,7 +155,11 @@ async def translate_ws(websocket: WebSocket) -> None:
             wav_writer.setframerate(AUDIO_SAMPLE_RATE)
             logger.info("[%s] saving debug audio to %s", session_id, wav_path)
 
-        provider = FasterWhisperProvider(websocket.app.state.whisper_model, websocket.app.state.whisper_executor)
+        provider = FasterWhisperProvider(
+            websocket.app.state.whisper_model,
+            websocket.app.state.whisper_executor,
+            websocket.app.state.vad_executor,
+        )
         provider.on_transcript(handle_transcript)
         provider.on_error(handle_stt_error)
         await provider.start(start.sourceLanguage)
