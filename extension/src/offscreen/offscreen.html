@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Offscreen Audio Capture</title>
+  </head>
+  <body>
+    <!-- Not shown to the user; only exists to host getUserMedia/AudioContext, which the
+         service worker cannot do. Status text here is for debugging via
+         chrome://extensions -> "Inspect views: offscreen.html". -->
+    <div id="status">idle</div>
+    <script type="module" src="./audio-capture.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,113 @@
+import os
+
+# Host/port aren't config here — they're passed directly as `uvicorn` CLI flags
+# (see server/README.md) and must match extension/src/constants/index.ts's
+# LOCAL_SERVER_ORIGIN and manifest.json's host_permissions if ever changed.
+
+# Fixed audio contract with the extension (see requirement.md section 13/16).
+AUDIO_SAMPLE_RATE = 16000
+AUDIO_CHANNELS = 1
+AUDIO_SAMPLE_WIDTH_BYTES = 2  # PCM16
+
+# Off by default — this project is local-first/privacy-friendly by design
+# (requirement.md section 29: do not persist captured audio unless explicitly
+# required). Opt in with SAVE_DEBUG_AUDIO=true only when you specifically want
+# to verify the capture/transport pipeline by listening back to a session.
+SAVE_DEBUG_AUDIO = os.environ.get("SAVE_DEBUG_AUDIO", "false").lower() == "true"
+DEBUG_AUDIO_DIR = os.environ.get("DEBUG_AUDIO_DIR", "tmp_recordings")
+
+# --- faster-whisper (see requirement.md section 8, 26) ---
+
+# POC3 benchmark (CPU-only, 8-core i5-1135G7, synthetic TTS samples — see
+# server/README.md "POC3 benchmark results" for the full numbers and caveats):
+# tiny ~380-420ms/pass but noticeably mangles EN/JA/ZH technical terms; small
+# ~1.5-2.6s/pass, best accuracy but that alone risks blowing the "near real-time"
+# feel once translation (POC4) stacks on top; base ~550-650ms/pass with a good
+# accuracy/latency balance. "base" is a POC3-informed default, not a final
+# decision — real speech (not clean TTS) and real end-user hardware may differ.
+WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", "base")
+
+# auto | cpu | cuda — "auto" tries CUDA and falls back to CPU if unavailable/fails.
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
+
+# Empty = auto-pick (int8 on CPU, float16 on CUDA).
+WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "")
+
+# Sliding-window streaming tuning (see requirement.md section 14).
+WHISPER_TRIGGER_SECONDS = float(os.environ.get("WHISPER_TRIGGER_SECONDS", "1.0"))
+# Was 0.7. Lowered for the "subtitle within 1s of speech ending" target — this
+# wait is pure dead time added before a finalize-eligible pass even runs, so
+# it's the cheapest thing to cut. Real risk: a brief natural pause *within* a
+# sentence (a breath, a comma) could now get finalized as if it were the
+# sentence's end, splitting translation context earlier than really wanted —
+# same class of trade-off already accepted for chunking, just tuned further.
+WHISPER_SILENCE_FINALIZE_SECONDS = float(os.environ.get("WHISPER_SILENCE_FINALIZE_SECONDS", "0.4"))
+# Was 15.0, then lowered to 4.0 to prioritize speed. Verified Whisper does NOT
+# naturally split a continuous, pause-free sentence into multiple segments at
+# any intermediate buffer size — it reports one growing segment the whole way.
+# So for speech with no natural pause, this max-buffer cutoff is the *only*
+# thing that finalizes (and therefore triggers translation for) a chunk
+# before the sentence fully ends — trading translation naturalness (a chunk
+# cut before its sentence completes reads a little less fluent in Vietnamese)
+# for lower latency. Nudged back up to 5.0 after NLLB quantization (see
+# NLLB_QUANTIZE_CPU) freed up real latency budget (translation dropped ~2.5x)
+# — reinvesting some of that into fuller, more natural chunks while still
+# staying far below the original 15s. This is the balance knob if you want to
+# lean further either way: lower for more speed, higher for more complete
+# sentences.
+WHISPER_MAX_BUFFER_SECONDS = float(os.environ.get("WHISPER_MAX_BUFFER_SECONDS", "5.0"))
+# When force-finalizing continuous speech with no natural pause, only trust a
+# word as "finished" if it ended at least this long before the buffer's raw
+# edge — otherwise a word Whisper hasn't fully heard yet can get cut mid-word
+# and silently dropped by translation. Verified directly: without this, a 4s
+# cutoff landed inside "React" and the word was lost entirely, not just split.
+WHISPER_WORD_SAFETY_MARGIN_SECONDS = float(os.environ.get("WHISPER_WORD_SAFETY_MARGIN_SECONDS", "0.3"))
+# Hard ceiling, found necessary from a user report of translation never
+# starting at all: the word-safety check above holds off finalizing until a
+# word has a safe trailing margin — fine for speech with brief natural gaps,
+# but real fast/continuous talking (much more common in real video content
+# than the clean single-sentence test that validated the soft cutoff) can
+# keep the last recognized word suspiciously close to the buffer edge on
+# every single pass, since the buffer edge itself keeps growing right along
+# with the audio. Without a hard ceiling that never resolves — the buffer
+# grows forever, STT never finalizes anything, translation never triggers.
+# At this point, accept the mid-word-cut risk and force-clear everything.
+WHISPER_HARD_MAX_BUFFER_SECONDS = float(os.environ.get("WHISPER_HARD_MAX_BUFFER_SECONDS", "8.0"))
+# Biases recognition toward this vocabulary — attacks a real root cause of
+# meaning loss found in testing: Whisper transliterating "TypeScript"/"Docker"
+# into JA/ZH phonetic renderings that NLLB then can't recognize as the terms
+# they are. Measured directly (JA): fixed "TypeScript"/"Docker" to stay in
+# Latin script; "React" specifically stayed transliterated regardless of
+# prompt wording tried (a strong learned loanword pattern, apparently
+# resistant to prompt biasing). Measured (ZH): meaningfully improved both
+# terms. Checked for the obvious risk — hallucinating these words into
+# unrelated non-technical speech — and found none on synthetic non-technical
+# EN/JA test sentences. Latency cost: negligible (within measurement noise).
+# Extend this list with your own domain vocabulary if relevant.
+WHISPER_INITIAL_PROMPT = os.environ.get(
+    "WHISPER_INITIAL_PROMPT",
+    "React, TypeScript, JavaScript, API, AWS, Docker, Kubernetes, Python, FastAPI, GitHub, Node.js, npm",
+)
+# Found from testing the prompt above in the real streaming pipeline (not just
+# isolated one-shot calls): on a near-silent trailing fragment, the model
+# hallucinated by echoing the prompt vocabulary back verbatim ("React,
+# TypeScript, Docker, ..."). This is a known characteristic of prompted
+# generation on ambiguous/empty input, and it's worse than the pre-prompt
+# hallucinations (unrelated words) since it looks deceptively like genuine
+# recognized speech. Can't safely filter by matching against the prompt text
+# itself — a real video genuinely discussing these exact technologies would
+# look identical. Instead calibrated directly against faster-whisper's
+# no_speech_prob: measured 0.0012 for confirmed real speech vs 0.5143 for the
+# reproduced hallucination — a >400x difference. Threshold set well below the
+# hallucination value for margin. Based on one direct reproduction, not a
+# large sample — tune if you see either real speech getting dropped (raise
+# it) or hallucinations still leaking through (lower it).
+WHISPER_NO_SPEECH_PROB_THRESHOLD = float(os.environ.get("WHISPER_NO_SPEECH_PROB_THRESHOLD", "0.4"))
+
+# --- NLLB translation (POC4, see requirement.md section 9/10) ---
+NLLB_DEVICE = os.environ.get("NLLB_DEVICE", "auto")  # auto | cpu | cuda
+# Dynamic int8 quantization on CPU. Measured directly: 2.5x faster (1298ms ->
+# 518ms avg per translate() call on this CPU) with no meaningful quality loss
+# on spot-checked output. Toggle off only if you notice a real quality
+# regression on your own content.
+NLLB_QUANTIZE_CPU = os.environ.get("NLLB_QUANTIZE_CPU", "true").lower() == "true"

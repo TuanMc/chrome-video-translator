@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Video Translator (Vietnamese Subtitles) — MVP",
+  "version": "0.1.0",
+  "description": "Real-time Vietnamese subtitles from tab audio, translated locally.",
+  "action": {
+    "default_popup": "src/popup/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "permissions": ["tabCapture", "offscreen", "storage", "activeTab", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8000/*"],
+  "minimum_chrome_version": "116"
+}

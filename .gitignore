@@ -1,0 +1,6 @@
+# Claude Code session-local metadata — not project source
+.claude/
+
+# OS/editor cruft
+.DS_Store
+*.swp
