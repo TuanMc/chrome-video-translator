@@ -71,6 +71,21 @@ if (!document.getElementById(HOST_ID)) {
   shadow.appendChild(container);
   (document.body ?? document.documentElement).appendChild(host);
 
+  // Fullscreen video (YouTube's fullscreen button, etc.) renders only the
+  // fullscreened element's subtree in the browser's top layer — everything
+  // else in the document, including this overlay under <body>, stops being
+  // drawn even though it's still in the DOM. Re-parent into whatever just
+  // became the fullscreen element (or back to <body> on exit) so the overlay
+  // stays visible either way. `position: fixed` still resolves against the
+  // viewport inside the top layer, so no positioning changes are needed.
+  function keepOverlayInFullscreenSubtree(): void {
+    const target = document.fullscreenElement ?? document.body ?? document.documentElement;
+    if (host.parentElement !== target) {
+      target.appendChild(host);
+    }
+  }
+  document.addEventListener("fullscreenchange", keepOverlayInFullscreenSubtree);
+
   // Sensible defaults (mirrors types/settings.ts DEFAULT_USER_SETTINGS) in case
   // CONTENT_INIT is somehow delayed past the first subtitle — shouldn't happen in
   // practice since STT+translation latency (~1.6-1.9s, see server/README.md) is

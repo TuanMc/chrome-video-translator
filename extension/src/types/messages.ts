@@ -1,4 +1,4 @@
-import type { SourceLanguage } from "./protocol";
+import type { SourceLanguage, TranslationProvider } from "./protocol";
 import type { DisplayMode, SubtitlePosition, UserSettings } from "./settings";
 
 // Matches requirement.md section 23, minus "transcribing" — the server never
@@ -16,7 +16,13 @@ export type RuntimeMessage =
   | { type: "POPUP_START"; settings: UserSettings }
   | { type: "POPUP_STOP" }
   | { type: "POPUP_GET_STATUS" }
-  | { type: "OFFSCREEN_START"; streamId: string; tabId: number; sourceLanguage: SourceLanguage }
+  | {
+      type: "OFFSCREEN_START";
+      streamId: string;
+      tabId: number;
+      sourceLanguage: SourceLanguage;
+      translationProvider: TranslationProvider;
+    }
   | { type: "OFFSCREEN_STOP" }
   | { type: "OFFSCREEN_SUBTITLE"; original: string; translated: string }
   | { type: "OFFSCREEN_STATUS"; status: "listening" | "translating" }

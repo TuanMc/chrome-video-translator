@@ -35,6 +35,7 @@ from app.config.settings import (
     WHISPER_INITIAL_PROMPT,
     WHISPER_MAX_BUFFER_SECONDS,
     WHISPER_MODEL_SIZE,
+    WHISPER_NO_REPEAT_NGRAM_SIZE,
     WHISPER_NO_SPEECH_PROB_THRESHOLD,
     WHISPER_SILENCE_FINALIZE_SECONDS,
     WHISPER_TRIGGER_SECONDS,
@@ -193,6 +194,7 @@ class FasterWhisperProvider(SpeechToTextProvider):
             beam_size=1,
             word_timestamps=True,
             initial_prompt=WHISPER_INITIAL_PROMPT or None,
+            no_repeat_ngram_size=WHISPER_NO_REPEAT_NGRAM_SIZE,
         )
         segments = list(segments_iter)
 

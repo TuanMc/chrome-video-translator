@@ -104,6 +104,33 @@ WHISPER_INITIAL_PROMPT = os.environ.get(
 # it) or hallucinations still leaking through (lower it).
 WHISPER_NO_SPEECH_PROB_THRESHOLD = float(os.environ.get("WHISPER_NO_SPEECH_PROB_THRESHOLD", "0.4"))
 
+# Repetition-loop guard. Found from a user report + screenshot showing the
+# model getting stuck mid-utterance repeating "the React, the API, the API,
+# the API, ..." — a known failure mode of greedy decoding (beam_size=1, used
+# here for speed): nothing penalizes re-emitting the same token, so once it
+# starts repeating, repeating again can stay the most likely next token
+# indefinitely. WHISPER_INITIAL_PROMPT makes it worse by biasing toward
+# exactly the words that get looped. This is a different failure than the
+# no_speech_prob hallucination above — it happens on real, confidently-
+# recognized speech, so no_speech_prob stays low the whole time and doesn't
+# catch it.
+#
+# Reproduced directly: heavy background noise + this prompt reliably drove
+# the model into repeating a prompt word 5x in a row ("AWS, AWS, AWS, AWS,
+# AWS") — the same failure shape as the reported bug. `no_repeat_ngram_size=3`
+# (hard-blocks repeating the same 3-token sequence) eliminated that exact
+# loop in the same reproduction, with no measurable quality change on clean
+# audio containing legitimate repeats (a 24s clip naturally repeating "the
+# API"/"the React" 3x each transcribed identically with the guard on vs off).
+#
+# `repetition_penalty` was tried too (the other standard knob for this) but
+# rejected: even a mild value (1.15) visibly fragmented and garbled otherwise-
+# correct transcription of that same legitimate-repeats clip ("In ATI Layer
+# itself depends On how To Reacts Framework") — a real regression, not a
+# hypothetical one. Left out entirely rather than shipped at a "safer" value,
+# since no value was tested clean.
+WHISPER_NO_REPEAT_NGRAM_SIZE = int(os.environ.get("WHISPER_NO_REPEAT_NGRAM_SIZE", "3"))
+
 # --- NLLB translation (POC4, see requirement.md section 9/10) ---
 NLLB_DEVICE = os.environ.get("NLLB_DEVICE", "auto")  # auto | cpu | cuda
 # Dynamic int8 quantization on CPU. Measured directly: 2.5x faster (1298ms ->

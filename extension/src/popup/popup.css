@@ -1,17 +1,18 @@
 :root {
-  --background: #000000;
-  --surface: #121212;
-  --surface-hover: #1c1c1c;
-  --text-primary: #ffffff;
-  --text-secondary: #a1a1aa;
-  --text-disabled: #666666;
-  --border: #27272a;
-  --button-primary-background: #ffffff;
-  --button-primary-text: #000000;
+  --background: #0a0b0d;
+  --surface: #181b21;
+  --surface-hover: #21252c;
+  --border: #2b2f37;
+  --text-primary: #f2f0ea;
+  --text-secondary: #9a9ca3;
+  --text-disabled: #55585e;
+  --accent: #e0a53c;
+  --accent-ink: #1a1305;
+  --accent-dim: #6b5527;
   --status-error: #f87171;
   --status-listening: #4ade80;
   --status-translating: #60a5fa;
-  --status-connecting: #a1a1aa;
+  --status-connecting: #9a9ca3;
 }
 
 * {
@@ -23,8 +24,7 @@ body {
   width: 320px;
   background: var(--background);
   color: var(--text-primary);
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .popup {
@@ -32,75 +32,127 @@ body {
 }
 
 .title {
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: var(--accent);
   margin: 0;
 }
 
 .subtitle {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin: 2px 0 16px;
+  font-size: 15px;
+  font-weight: 800;
+  text-wrap: balance;
+  margin: 2px 0 18px;
 }
 
 .section {
   margin-bottom: 16px;
 }
 
-.section-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+.section-label,
+.field-label {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-secondary);
   margin: 0 0 8px;
 }
 
 .field-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin: 10px 0 6px;
+  margin: 12px 0 6px;
 }
 
 .field-label:first-of-type {
   margin-top: 0;
 }
 
-.select {
-  width: 100%;
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text-primary);
-  font-size: 13px;
-}
+/* ---------- segmented (pill) toggle controls ---------- */
 
-.select:disabled {
-  opacity: 0.5;
-}
-
-.radio-row {
+.segmented {
   display: flex;
-  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--surface);
 }
 
-.radio-option {
+.segmented button {
+  flex: 1;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: "Manrope", sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 9px 4px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+
+.segmented button:hover:not(:disabled):not(.active) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.segmented button.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.segmented button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.segmented button:disabled.active {
+  background: var(--surface-hover);
+  color: var(--text-disabled);
+}
+
+.segmented button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.hint-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+/* ---------- slider ---------- */
+
+.size-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.radio-option input {
-  accent-color: var(--text-primary);
+  gap: 10px;
 }
 
 .slider {
-  width: 100%;
-  accent-color: var(--text-primary);
+  flex: 1;
+  accent-color: var(--accent);
 }
+
+.size-value {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  width: 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- status ---------- */
 
 .status-row {
   display: flex;
@@ -109,7 +161,7 @@ body {
   padding: 10px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 7px;
   font-size: 12px;
   margin-bottom: 12px;
 }
@@ -144,17 +196,25 @@ body {
   margin: -4px 0 12px;
 }
 
+/* ---------- primary action ---------- */
+
 button.primary {
   width: 100%;
   padding: 12px;
-  border-radius: 6px;
-  border: none;
-  background: var(--button-primary-background);
-  color: var(--button-primary-text);
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: "Manrope", sans-serif;
   font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 800;
+  letter-spacing: 0.02em;
   cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #ecb658;
 }
 
 button.primary:disabled {
@@ -163,7 +223,11 @@ button.primary:disabled {
 }
 
 button.primary.stop {
-  background: var(--surface);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+}
+
+button.primary.stop:hover:not(:disabled) {
+  background: rgba(224, 165, 60, 0.1);
 }

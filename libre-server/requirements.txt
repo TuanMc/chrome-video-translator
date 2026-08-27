@@ -1,0 +1,9 @@
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.33
+faster-whisper>=1.2,<1.3
+numpy>=2.0,<3.0
+
+# LibreTranslate translation — async HTTP client for calling the separate
+# LibreTranslate container (see docker-compose.yml). No torch/transformers
+# here: translation isn't an in-process model on this server.
+httpx>=0.27,<0.28

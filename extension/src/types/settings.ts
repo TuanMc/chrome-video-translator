@@ -1,10 +1,11 @@
-import type { SourceLanguage } from "./protocol";
+import type { SourceLanguage, TranslationProvider } from "./protocol";
 
 export type DisplayMode = "vietnamese" | "bilingual";
 export type SubtitlePosition = "top" | "bottom";
 
 export interface UserSettings {
   sourceLanguage: SourceLanguage;
+  translationProvider: TranslationProvider;
   displayMode: DisplayMode;
   subtitlePosition: SubtitlePosition;
   subtitleFontSize: number;
@@ -12,6 +13,7 @@ export interface UserSettings {
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   sourceLanguage: "en",
+  translationProvider: "nllb",
   displayMode: "vietnamese",
   subtitlePosition: "bottom",
   subtitleFontSize: 24,

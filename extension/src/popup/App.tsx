@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { SERVER_CONFIG } from "../constants";
 import { loadSettings, saveSettings } from "../services/settings-storage";
 import { SUBTITLE_FONT_SIZE_MAX, SUBTITLE_FONT_SIZE_MIN } from "../types/settings";
 import type { DisplayMode, SubtitlePosition, UserSettings } from "../types/settings";
-import type { SourceLanguage } from "../types/protocol";
+import type { SourceLanguage, TranslationProvider } from "../types/protocol";
 import type { AckResponse, CaptureStatus, RuntimeMessage } from "../types/messages";
 
 const LANGUAGE_OPTIONS: { value: SourceLanguage; label: string }[] = [
@@ -10,6 +11,18 @@ const LANGUAGE_OPTIONS: { value: SourceLanguage; label: string }[] = [
   { value: "ja", label: "日本語" },
   { value: "zh", label: "中文" },
 ];
+
+// Measured directly by testing both backends on the same sentences — not a
+// generic claim. See server/README.md for the full comparison.
+const PROVIDER_OPTIONS: { value: TranslationProvider; label: string }[] = [
+  { value: "nllb", label: "NLLB" },
+  { value: "libretranslate", label: "LibreTranslate" },
+];
+
+interface ProviderAvailability {
+  nllb: boolean;
+  libretranslate: boolean;
+}
 
 const STATUS_LABEL: Record<CaptureStatus["state"], string> = {
   idle: "Idle",
@@ -24,12 +37,46 @@ export default function App() {
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [status, setStatus] = useState<CaptureStatus>({ state: "idle" });
   const [busy, setBusy] = useState(false);
+  // Defaults to nllb-only-available until the health check resolves — matches
+  // the common case (no LibreTranslate container running) and avoids a flash
+  // of an enabled option that then gets disabled a moment later.
+  const [providerAvailability, setProviderAvailability] = useState<ProviderAvailability>({
+    nllb: true,
+    libretranslate: false,
+  });
 
   useEffect(() => {
     loadSettings().then(setSettings);
     chrome.runtime.sendMessage({ type: "POPUP_GET_STATUS" } satisfies RuntimeMessage).then((s: CaptureStatus) => {
       if (s) setStatus(s);
     });
+    // nllb-server and libre-server are independent processes on different
+    // ports (see SERVER_CONFIG) — each is checked separately since either can
+    // be up without the other. Each reports readiness under its own field
+    // name (nllb-server: translationModelLoaded, libre-server: translationReady).
+    fetch(SERVER_CONFIG.nllb.healthUrl, { signal: AbortSignal.timeout(3000) })
+      .then((res) => res.json())
+      .then((health: { sttModelLoaded?: boolean; translationModelLoaded?: boolean }) => {
+        setProviderAvailability((prev) => ({
+          ...prev,
+          nllb: Boolean(health.sttModelLoaded && health.translationModelLoaded),
+        }));
+      })
+      .catch(() => setProviderAvailability((prev) => ({ ...prev, nllb: false })));
+
+    fetch(SERVER_CONFIG.libretranslate.healthUrl, { signal: AbortSignal.timeout(3000) })
+      .then((res) => res.json())
+      .then((health: { sttModelLoaded?: boolean; translationReady?: boolean }) => {
+        setProviderAvailability((prev) => ({
+          ...prev,
+          libretranslate: Boolean(health.sttModelLoaded && health.translationReady),
+        }));
+      })
+      .catch(() => {
+        // Most common case — libre-server is an opt-in second server most
+        // users won't have running. startCapture()'s own health check
+        // surfaces a real error if the user tries to start a session anyway.
+      });
 
     const listener = (message: RuntimeMessage) => {
       if (message.type === "STATUS_UPDATE") {
@@ -85,67 +132,95 @@ export default function App() {
       <p className="subtitle">Real-time Vietnamese subtitles</p>
 
       <div className="section">
-        <label className="section-label" htmlFor="source-language">
-          SOURCE LANGUAGE
-        </label>
-        <select
-          id="source-language"
-          className="select"
-          value={settings.sourceLanguage}
-          disabled={controlsDisabled}
-          onChange={(e) => updateSettings({ sourceLanguage: e.target.value as SourceLanguage })}
-        >
+        <p className="section-label">Source language</p>
+        <div className="segmented" role="radiogroup" aria-label="Source language">
           {LANGUAGE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
+            <button
+              key={opt.value}
+              type="button"
+              className={settings.sourceLanguage === opt.value ? "active" : ""}
+              aria-pressed={settings.sourceLanguage === opt.value}
+              disabled={controlsDisabled}
+              onClick={() => updateSettings({ sourceLanguage: opt.value })}
+            >
               {opt.label}
-            </option>
+            </button>
           ))}
-        </select>
+        </div>
       </div>
 
       <div className="section">
-        <p className="section-label">SUBTITLE</p>
+        <p className="section-label">Translation engine</p>
+        <div className="segmented" role="radiogroup" aria-label="Translation engine">
+          {PROVIDER_OPTIONS.map((opt) => {
+            const available = providerAvailability[opt.value];
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                className={settings.translationProvider === opt.value ? "active" : ""}
+                aria-pressed={settings.translationProvider === opt.value}
+                disabled={controlsDisabled || !available}
+                onClick={() => updateSettings({ translationProvider: opt.value })}
+              >
+                {opt.label}
+                {!available ? " (off)" : ""}
+              </button>
+            );
+          })}
+        </div>
+        <p className="hint-text">
+          NLLB: more accurate on technical terms and Japanese. LibreTranslate: more natural on casual English
+          slang/register.
+        </p>
+      </div>
+
+      <div className="section">
+        <p className="section-label">Subtitle</p>
 
         <p className="field-label">Display</p>
-        <div className="radio-row">
+        <div className="segmented" role="radiogroup" aria-label="Display mode">
           {(["vietnamese", "bilingual"] as DisplayMode[]).map((mode) => (
-            <label key={mode} className="radio-option">
-              <input
-                type="radio"
-                name="displayMode"
-                checked={settings.displayMode === mode}
-                disabled={controlsDisabled}
-                onChange={() => updateSettings({ displayMode: mode })}
-              />
+            <button
+              key={mode}
+              type="button"
+              className={settings.displayMode === mode ? "active" : ""}
+              aria-pressed={settings.displayMode === mode}
+              disabled={controlsDisabled}
+              onClick={() => updateSettings({ displayMode: mode })}
+            >
               {mode === "vietnamese" ? "Vietnamese" : "Bilingual"}
-            </label>
+            </button>
           ))}
         </div>
 
         <p className="field-label">Text size</p>
-        <input
-          type="range"
-          className="slider"
-          min={SUBTITLE_FONT_SIZE_MIN}
-          max={SUBTITLE_FONT_SIZE_MAX}
-          value={settings.subtitleFontSize}
-          disabled={controlsDisabled}
-          onChange={(e) => updateSettings({ subtitleFontSize: Number(e.target.value) })}
-        />
+        <div className="size-row">
+          <input
+            type="range"
+            className="slider"
+            min={SUBTITLE_FONT_SIZE_MIN}
+            max={SUBTITLE_FONT_SIZE_MAX}
+            value={settings.subtitleFontSize}
+            disabled={controlsDisabled}
+            onChange={(e) => updateSettings({ subtitleFontSize: Number(e.target.value) })}
+          />
+          <span className="size-value">{settings.subtitleFontSize}px</span>
+        </div>
 
         <p className="field-label">Position</p>
-        <div className="radio-row">
+        <div className="segmented" role="radiogroup" aria-label="Subtitle position">
           {(["top", "bottom"] as SubtitlePosition[]).map((pos) => (
-            <label key={pos} className="radio-option">
-              <input
-                type="radio"
-                name="position"
-                checked={settings.subtitlePosition === pos}
-                disabled={controlsDisabled}
-                onChange={() => updateSettings({ subtitlePosition: pos })}
-              />
+            <button
+              key={pos}
+              type="button"
+              className={settings.subtitlePosition === pos ? "active" : ""}
+              aria-pressed={settings.subtitlePosition === pos}
+              disabled={controlsDisabled}
+              onClick={() => updateSettings({ subtitlePosition: pos })}
+            >
               {pos === "top" ? "Top" : "Bottom"}
-            </label>
+            </button>
           ))}
         </div>
       </div>

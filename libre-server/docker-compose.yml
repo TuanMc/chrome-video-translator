@@ -1,0 +1,29 @@
+# This server needs two containers: this app (STT + talks to LibreTranslate)
+# and LibreTranslate itself (the actual translation engine). Compose brings
+# both up together — see run-server.bat, which just runs `docker compose up`.
+services:
+  server:
+    build: .
+    ports:
+      - "8001:8001"
+    volumes:
+      - hf-cache:/data/hf-cache
+    environment:
+      - LIBRETRANSLATE_URL=http://libretranslate:5000
+    depends_on:
+      - libretranslate
+
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    ports:
+      - "5000:5000"
+    volumes:
+      - libretranslate-cache:/home/libretranslate/.local
+    environment:
+      # Matches what was verified working directly against this image — only
+      # load the languages this project actually needs, keeps startup fast.
+      - LT_LOAD_ONLY=en,ja,zh,vi
+
+volumes:
+  hf-cache:
+  libretranslate-cache:

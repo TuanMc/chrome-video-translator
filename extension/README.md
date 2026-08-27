@@ -2,7 +2,10 @@
 
 Chrome MV3 extension: captures current-tab audio, streams it to a local
 FastAPI server (STT + translation), and overlays the Vietnamese subtitle on
-the page. See `../server/README.md` for the backend half.
+the page. Two interchangeable backend servers exist — `../nllb-server/README.md`
+(default, port 8000) and `../libre-server/README.md` (LibreTranslate-backed,
+port 8001) — the popup's "Translation Engine" setting picks which one a
+session talks to; either or both can be running.
 
 Built incrementally as 5 POCs (tab capture → transport → STT → translation →
 on-page overlay), each proven working before the next was built — see git-less
@@ -26,7 +29,8 @@ Offscreen doc    Content script
  AudioWorklet)    overlay)
   │
   ▼
-Local server (FastAPI + faster-whisper + NLLB) — see ../server/README.md
+Local server, either nllb-server (FastAPI + faster-whisper + NLLB) or
+libre-server (FastAPI + faster-whisper + LibreTranslate) — see their READMEs
 ```
 
 **Deviation from the originally-approved folder structure worth flagging**:
@@ -59,16 +63,22 @@ This produces `dist/`, which is what you load into Chrome (not the dev server).
    plain rebuild isn't picked up automatically, and Chrome may prompt to
    accept the new permission.
 
-## Before testing: start the local server
+## Before testing: start a local server
 
-See `../server/README.md`. The popup now checks `GET /health` before
-starting and will show a clear error (not hang) if the server isn't up or
-hasn't finished loading its models yet.
+Start whichever server matches your intended **Translation Engine** popup
+setting — `../nllb-server/README.md` (port 8000) or `../libre-server/README.md`
+(port 8001). Both can run at once. The popup now checks `GET /health` on the
+selected server before starting and will show a clear error (not hang) if it
+isn't up or hasn't finished loading/reaching its models yet.
 
 ## Popup settings
 
 - **Source language**: English / 日本語 / 中文 — sent as `sourceLanguage` in
   the WebSocket `start` message.
+- **Translation engine**: NLLB or LibreTranslate — determines which local
+  server (port 8000 or 8001) this session connects to. LibreTranslate is
+  disabled in the popup unless `libre-server`'s `/health` reports it reachable
+  (most users won't have it running — it's an opt-in second server).
 - **Display**: Vietnamese-only or Bilingual (original + translated) — applied
   by the content script (hides/shows the original-language line).
 - **Text size**: 16-32px, applied to the translated line (original line is
@@ -83,8 +93,10 @@ settings, then start; no live-editing mid-session yet.
 
 ## Manual test steps
 
-1. Start the local server, confirm `curl http://127.0.0.1:8000/health` shows both
-   `sttModelLoaded` and `translationModelLoaded` as `true`.
+1. Start nllb-server, confirm `curl http://127.0.0.1:8000/health` shows both
+   `sttModelLoaded` and `translationModelLoaded` as `true`. (For libre-server:
+   `curl http://127.0.0.1:8001/health`, looking for `sttModelLoaded` and
+   `translationReady`.)
 2. Open the popup with the server **stopped** first — click **START
    TRANSLATION** — should show a clear "Local server is not running" error, not
    hang or silently fail. Then start the server and confirm the same click
@@ -188,6 +200,8 @@ confirmation.
   positives would need real tuning against real content; not attempted.
 - DRM-protected streams and `chrome://`-style pages are expected to fail;
   that's by design.
-- `host_permissions` is scoped to exactly `http://127.0.0.1:8000/*` (needed
-  so the service worker's health-check `fetch()` isn't blocked by CORS) —
-  if you change the server's port, update this in `manifest.json` too.
+- `host_permissions` is scoped to exactly `http://127.0.0.1:8000/*` and
+  `http://127.0.0.1:8001/*` (needed so the service worker's health-check
+  `fetch()` isn't blocked by CORS) — if you change either server's port,
+  update this in `manifest.json` and `src/constants/index.ts`'s
+  `SERVER_CONFIG` too.

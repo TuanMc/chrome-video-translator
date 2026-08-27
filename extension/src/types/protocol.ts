@@ -5,10 +5,13 @@
 // everything else is a JSON text frame matching one of the types below.
 
 export type SourceLanguage = "en" | "ja" | "zh";
+// Which local server to talk to (see src/constants SERVER_CONFIG) — a
+// client-side routing choice, not sent to the server itself: each server
+// (nllb-server / libre-server) is single-purpose, so which one you connect
+// to *is* the translation-backend choice.
+export type TranslationProvider = "nllb" | "libretranslate";
 
-export type ClientControlMessage =
-  | { type: "start"; sourceLanguage: SourceLanguage }
-  | { type: "stop" };
+export type ClientControlMessage = { type: "start"; sourceLanguage: SourceLanguage } | { type: "stop" };
 
 export type ServerMessage =
   | { type: "ready" }

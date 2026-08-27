@@ -1,7 +1,7 @@
-import { TRANSLATION_WS_URL } from "../constants";
+import { SERVER_CONFIG } from "../constants";
 import { TranslationSocket } from "../services/websocket";
 import type { AckResponse, RuntimeMessage } from "../types/messages";
-import type { SourceLanguage } from "../types/protocol";
+import type { SourceLanguage, TranslationProvider } from "../types/protocol";
 
 // Chrome's tab-capture constraints aren't part of the standard MediaTrackConstraints
 // lib types, so they're declared locally and cast at the getUserMedia call site.
@@ -32,7 +32,11 @@ function setStatusText(text: string): void {
   console.log(`[offscreen] ${text}`);
 }
 
-async function startCapture(streamId: string, sourceLanguage: SourceLanguage): Promise<void> {
+async function startCapture(
+  streamId: string,
+  sourceLanguage: SourceLanguage,
+  translationProvider: TranslationProvider,
+): Promise<void> {
   if (stream) {
     throw new Error("Capture already in progress.");
   }
@@ -72,7 +76,7 @@ async function startCapture(streamId: string, sourceLanguage: SourceLanguage): P
     silentGainNode.connect(audioContext.destination);
 
     chunksSent = 0;
-    socket = new TranslationSocket(TRANSLATION_WS_URL, {
+    socket = new TranslationSocket(SERVER_CONFIG[translationProvider].wsUrl, {
       onServerMessage: (message) => {
         console.log("[offscreen] server:", message);
         if (message.type === "subtitle") {
@@ -175,7 +179,7 @@ async function handleUnexpectedDisconnect(message: string): Promise<void> {
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   if (message.type === "OFFSCREEN_START") {
-    startCapture(message.streamId, message.sourceLanguage)
+    startCapture(message.streamId, message.sourceLanguage, message.translationProvider)
       .then(() => sendResponse({ ok: true } satisfies AckResponse))
       .catch((err: Error) => {
         setStatusText(`error: ${err.message}`);

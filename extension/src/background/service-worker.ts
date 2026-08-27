@@ -3,9 +3,10 @@ import {
   CONTENT_SCRIPT_PATH,
   CAPTURE_STATUS_STORAGE_KEY,
   UNSUPPORTED_URL_PREFIXES,
-  LOCAL_SERVER_HEALTH_URL,
+  SERVER_CONFIG,
 } from "../constants";
 import type { AckResponse, CaptureStatus, RuntimeMessage } from "../types/messages";
+import type { TranslationProvider } from "../types/protocol";
 import type { UserSettings } from "../types/settings";
 import { withTimeout } from "../utils/timeout";
 
@@ -55,28 +56,44 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
   return tab;
 }
 
+const SERVER_FOLDER: Record<TranslationProvider, string> = {
+  nllb: "nllb-server",
+  libretranslate: "libre-server",
+};
+
 // requirement.md section 24: check the local server before attempting to start,
 // rather than discovering it's down partway through tabCapture/offscreen setup.
-async function checkLocalServer(): Promise<void> {
+// nllb-server and libre-server are independent processes (see SERVER_CONFIG) —
+// only the one for the selected engine needs to be up.
+async function checkLocalServer(translationProvider: TranslationProvider): Promise<void> {
+  const { healthUrl, origin } = SERVER_CONFIG[translationProvider];
   let response: Response;
   try {
-    response = await fetch(LOCAL_SERVER_HEALTH_URL, { signal: AbortSignal.timeout(3000) });
+    response = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
   } catch {
-    throw new Error("Local server is not running. Start it with: cd server && .venv/bin/uvicorn app.main:app --port 8000");
+    throw new Error(
+      `${SERVER_FOLDER[translationProvider]} is not running at ${origin}. Start it with: ` +
+        `cd ${SERVER_FOLDER[translationProvider]} && .venv/bin/uvicorn app.main:app --port ${new URL(origin).port}`,
+    );
   }
   if (!response.ok) {
-    throw new Error(`Local server returned an error (HTTP ${response.status}).`);
+    throw new Error(`${SERVER_FOLDER[translationProvider]} returned an error (HTTP ${response.status}).`);
   }
-  const health = (await response.json()) as { sttModelLoaded?: boolean; translationModelLoaded?: boolean };
-  if (!health.sttModelLoaded || !health.translationModelLoaded) {
-    throw new Error("Local server is still loading its models — wait a moment and try again.");
+  const health = (await response.json()) as {
+    sttModelLoaded?: boolean;
+    translationModelLoaded?: boolean; // nllb-server
+    translationReady?: boolean; // libre-server
+  };
+  const translationOk = translationProvider === "nllb" ? health.translationModelLoaded : health.translationReady;
+  if (!health.sttModelLoaded || !translationOk) {
+    throw new Error(`${SERVER_FOLDER[translationProvider]} is still loading/reachable — wait a moment and try again.`);
   }
 }
 
 async function startCapture(settings: UserSettings): Promise<void> {
   await setStatus({ state: "connecting" });
 
-  await checkLocalServer();
+  await checkLocalServer(settings.translationProvider);
   const tab = await getActiveTab();
 
   await ensureOffscreenDocument();
@@ -111,6 +128,7 @@ async function startCapture(settings: UserSettings): Promise<void> {
         streamId,
         tabId: tab.id!,
         sourceLanguage: settings.sourceLanguage,
+        translationProvider: settings.translationProvider,
       } satisfies RuntimeMessage),
       10000,
       "Audio capture setup did not respond in time.",
