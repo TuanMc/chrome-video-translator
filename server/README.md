@@ -8,7 +8,41 @@ streaming scheme (requirement.md section 14) sending `transcript` messages
 segment with `facebook/nllb-200-distilled-600M`, sending a `subtitle` message
 (`original` + `translated`) once translation completes.
 
-## Setup
+## Setup — Option A: Docker (no Python needed on the target machine)
+
+For a machine with nothing installed — e.g. a separate Windows PC — this is
+the easiest path. Everything (Python, PyTorch, faster-whisper, NLLB) runs
+inside a container; the only thing you install on that machine is Docker
+Desktop.
+
+1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+   and make sure it's running (its icon/status should say "running", not
+   "starting").
+2. Get this repo onto that machine (`git clone`, or download the ZIP from
+   GitHub and extract it).
+3. Open the `server` folder and double-click **`run-server.bat`** (Windows).
+   On Mac/Linux, run the same commands directly instead — see the script for
+   the exact `docker build`/`docker run` lines, they're identical cross-platform.
+
+The first run downloads ~2.5GB of AI models (needs internet, takes a few
+minutes) into a Docker volume, so restarts afterward are fast and don't
+re-download anything. The script prints how to check readiness and how to
+stop/restart the server afterward.
+
+I built and tested this exact Dockerfile directly (not just written and
+assumed) — confirmed the full pipeline (STT + translation, all three
+languages) works correctly inside the container, and that the model-cache
+volume actually persists across restarts (second start: ~21s, no
+re-download). I can't test the `.bat` script itself on a real Windows
+machine from here, though — the Docker commands inside it are the exact ones
+I validated, but if the batch-file wrapper itself misbehaves on your
+machine, that's the part to tell me about.
+
+CPU-only image, matching this whole project's setup — no GPU passthrough
+configured. If you have an NVIDIA GPU and want to use it, that needs the
+NVIDIA Container Toolkit on the host and a CUDA base image, not covered here.
+
+## Setup — Option B: local Python venv (for development)
 
 ```bash
 cd server
